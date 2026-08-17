@@ -17,4 +17,9 @@ public class VpmRepoEntity
     [Required] [MaxLength(1000)] public required string UpStreamUrl { get; set; }
 
     [Required] [MaxLength(50)] public required string SyncTaskCron { get; set; }
+
+    /// <summary>
+    /// 是否全量镜像该仓库的所有版本（不受 Sync:MaxVersionsPerPackage 限制）。
+    /// </summary>
+    public bool FullSync { get; set; } = false;
 }

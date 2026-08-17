@@ -1,6 +1,7 @@
 ﻿using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Serilog;
 using Serilog.Extensions.Logging;
 using Serilog.Sinks.ILogger;
@@ -8,6 +9,7 @@ using Serilog.Templates;
 using VPMReposSynchronizer.Core.DbContexts;
 using VPMReposSynchronizer.Core.Models.Entity;
 using VPMReposSynchronizer.Core.Models.Types;
+using VPMReposSynchronizer.Core.Options;
 using VPMReposSynchronizer.Core.Services.FileHost;
 using VPMReposSynchronizer.Core.Utils;
 using ILogger = Microsoft.Extensions.Logging.ILogger;
@@ -20,7 +22,8 @@ public class RepoSynchronizerService(
     IFileHostService fileHostService,
     ILogger<RepoSynchronizerService> logger,
     HttpClient httpClient,
-    DefaultDbContext defaultDbContext)
+    DefaultDbContext defaultDbContext,
+    IOptions<SyncOptions> syncOptions)
 {
     public static readonly string SyncTaskLoggerPath = Path.Combine("sync-tasks-logs");
 
@@ -58,7 +61,7 @@ public class RepoSynchronizerService(
 
             try
             {
-                await StartSyncInternal(repo.UpStreamUrl, repo.Id, taskLogger);
+                await StartSyncInternal(repo.UpStreamUrl, repo.Id, taskLogger, repo.FullSync);
             }
             catch (Exception e)
             {
@@ -77,7 +80,7 @@ public class RepoSynchronizerService(
         }
     }
 
-    private async Task StartSyncInternal(string sourceRepoUrl, string sourceRepoId, ILogger taskLogger)
+    private async Task StartSyncInternal(string sourceRepoUrl, string sourceRepoId, ILogger taskLogger, bool repoFullSync = false)
     {
         taskLogger.LogInformation("Start Sync with: {SourceRepoId}@{RepoUrl}", sourceRepoId, sourceRepoUrl);
 
@@ -88,15 +91,14 @@ public class RepoSynchronizerService(
         await repoMetaDataService.UpdateRepoAsync(sourceRepoId, repo);
 
         // Count Packages
-        var packagesCount = repo.Packages
-            .SelectMany(package =>
-                package.Value.Versions.Select(version => version.Value))
-            .Count();
-        taskLogger.LogInformation("Found {PackageCount} Packages", packagesCount);
+        var packages = repo.Packages
+            .SelectMany(package => FilterVersions(package.Value.Versions, sourceRepoId, repoFullSync))
+            .ToArray();
+
+        taskLogger.LogInformation("Found {PackageCount} Packages", packages.Length);
 
         // Sync Packages
-        foreach (var package in repo.Packages.SelectMany(
-                     package => package.Value.Versions.Select(version => version.Value)))
+        foreach (var package in packages)
         {
             var fileId = await ProcessPackageFileAsync(package, sourceRepoId, taskLogger);
 
@@ -105,6 +107,55 @@ public class RepoSynchronizerService(
         }
 
         await defaultDbContext.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// 按 MaxVersionsPerPackage 配置过滤版本：每个包只保留最新的 N 个版本，0 = 全量。
+    /// 仓库自身的 FullSync 标志或 FullSyncRepoIds 配置中列出的仓库始终全量镜像。
+    /// </summary>
+    private IEnumerable<VpmPackage> FilterVersions(Dictionary<string, VpmPackage> versions, string repoId, bool repoFullSync)
+    {
+        var options = syncOptions.Value;
+
+        var ordered = versions.Values.OrderByDescending(package => package.Version, VersionComparer);
+
+        var isFullSync = repoFullSync || options.FullSyncRepoIds
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(id => string.Equals(id, repoId, StringComparison.OrdinalIgnoreCase));
+
+        if (isFullSync) logger.LogInformation("Repo {RepoId} is in FullSyncRepoIds, mirror all versions", repoId);
+
+        return options.MaxVersionsPerPackage > 0 && !isFullSync
+            ? ordered.Take(options.MaxVersionsPerPackage)
+            : ordered;
+    }
+
+    private static readonly IComparer<string> VersionComparer = Comparer<string>.Create((a, b) =>
+    {
+        var (mainA, preA) = SplitVersion(a);
+        var (mainB, preB) = SplitVersion(b);
+
+        var partsA = mainA.Split('.');
+        var partsB = mainB.Split('.');
+
+        for (var i = 0; i < Math.Max(partsA.Length, partsB.Length); i++)
+        {
+            var numA = i < partsA.Length && int.TryParse(partsA[i], out var va) ? va : 0;
+            var numB = i < partsB.Length && int.TryParse(partsB[i], out var vb) ? vb : 0;
+
+            if (numA != numB) return numA.CompareTo(numB);
+        }
+
+        // 主版本号相同时：正式版 > 预发布版
+        if (preA is null != preB is null) return preA is null ? 1 : -1;
+
+        return string.Compare(preA, preB, StringComparison.Ordinal);
+    });
+
+    private static (string main, string? pre) SplitVersion(string version)
+    {
+        var idx = version.IndexOf('-');
+        return idx < 0 ? (version, null) : (version[..idx], version[(idx + 1)..]);
     }
 
     private ILogger<RepoSynchronizerService> GetTaskLogger(ILogger parentLogger, string logPath)

@@ -1,12 +1,15 @@
 ﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
     <Target Name="GetGitInfo" BeforeTargets="BeforeBuild">
-        <Exec Command="git rev-parse HEAD" ConsoleToMSBuild="true">
+        <Exec Command="git rev-parse HEAD" ConsoleToMSBuild="true" IgnoreExitCode="true">
             <Output TaskParameter="ConsoleOutput" PropertyName="GitCommitHash"/>
         </Exec>
-        <Exec Command="git rev-parse --abbrev-ref HEAD" ConsoleToMSBuild="true">
+        <Exec Command="git rev-parse --abbrev-ref HEAD" ConsoleToMSBuild="true" IgnoreExitCode="true">
             <Output TaskParameter="ConsoleOutput" PropertyName="GitBranchName"/>
         </Exec>
         <PropertyGroup>
+            <!-- 无 .git 目录（如源码打包部署）时的回退值，避免构建失败 -->
+            <GitCommitHash Condition="'$(GitCommitHash)' == ''">unknown</GitCommitHash>
+            <GitBranchName Condition="'$(GitBranchName)' == ''">unknown</GitBranchName>
             <BuildTime>$([System.DateTime]::UtcNow.ToString("o"))</BuildTime>
         </PropertyGroup>
     </Target>

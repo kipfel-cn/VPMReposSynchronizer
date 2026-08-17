@@ -281,6 +281,20 @@ using (var scope = app.Services.CreateScope())
     var dbContext = services.GetRequiredService<DefaultDbContext>();
 
     await dbContext.Database.EnsureCreatedAsync();
+
+    // 旧版数据库无 FullSync 列，手动补齐（EnsureCreated 不会更新已存在的库）
+    var conn = dbContext.Database.GetDbConnection();
+    await conn.OpenAsync();
+    await using var migrateCmd = conn.CreateCommand();
+    migrateCmd.CommandText = "ALTER TABLE Repos ADD COLUMN FullSync INTEGER NOT NULL DEFAULT 0";
+    try
+    {
+        await migrateCmd.ExecuteNonQueryAsync();
+    }
+    catch
+    {
+        // 列已存在，忽略
+    }
 }
 
 if (fileHostServiceOptions.FileHostServiceType == FileHostServiceType.LocalFileHost)

@@ -35,6 +35,11 @@ public class RepoController(
     [Authorize(AuthenticationSchemes = "ApiKey", Policy = "ApiKey")]
     public async Task<IActionResult> Create(RepoAdminUpdateDto repo)
     {
+        // DTO 字段可空（为支持 PUT 部分更新），POST 时手动校验必填项
+        if (string.IsNullOrEmpty(repo.ApiId) || string.IsNullOrEmpty(repo.UpstreamUrl) ||
+            string.IsNullOrEmpty(repo.SyncTaskCron))
+            return BadRequest("apiId, upstreamUrl and syncTaskCron are required.");
+
         var repoEntity = mapper.Map<VpmRepoEntity>(repo);
 
         if (!Uri.TryCreate(repoEntity.UpStreamUrl, UriKind.Absolute, out _)) return BadRequest("Invalid url.");
@@ -54,13 +59,22 @@ public class RepoController(
     {
         if (await repoMetaDataService.GetRepoById(id) is not { } repoEntity) return NotFound();
 
-        repoEntity.Description = repo.Description;
-        repoEntity.SyncTaskCron = repo.SyncTaskCron;
-        repoEntity.UpStreamUrl = repo.UpstreamUrl;
+        // 支持部分字段更新：不传的字段保持原值
+        if (repo.Description is not null) repoEntity.Description = repo.Description;
 
-        if (!Uri.TryCreate(repoEntity.UpStreamUrl, UriKind.Absolute, out _)) return BadRequest("Invalid url.");
+        if (repo.UpstreamUrl is not null)
+        {
+            if (!Uri.TryCreate(repo.UpstreamUrl, UriKind.Absolute, out _)) return BadRequest("Invalid url.");
+            repoEntity.UpStreamUrl = repo.UpstreamUrl;
+        }
 
-        if (!CronExpression.TryParse(repoEntity.SyncTaskCron, out _)) return BadRequest("Invalid cron expression.");
+        if (repo.SyncTaskCron is not null)
+        {
+            if (!CronExpression.TryParse(repo.SyncTaskCron, out _)) return BadRequest("Invalid cron expression.");
+            repoEntity.SyncTaskCron = repo.SyncTaskCron;
+        }
+
+        if (repo.FullSync.HasValue) repoEntity.FullSync = repo.FullSync.Value;
 
         await repoMetaDataService.UpdateRepoAsync(repoEntity);
 
